@@ -194,11 +194,14 @@ if [[ $EXIT_CODE -eq 0 ]]; then
     echo ""
     echo "[$(date)] Evaluation completed successfully."
 
-    # ── Compute metrics ──
+    # ── Re-score predictions ──
+    # eval.py / eval_api.py compute metrics inline and write them to the run's
+    # output JSON. We additionally invoke parse_utils.py here to produce a
+    # standalone metrics.json for convenience (e.g. for sweeping).
     PRED_FILE=$(find "$OUTPUT_DIR" -name "*.json" -not -name "metrics.json" | head -1)
     if [[ -n "$PRED_FILE" ]]; then
         echo "[$(date)] Computing metrics..."
-        python "$PROJECT_ROOT/metric.py" \
+        python "$PROJECT_ROOT/parse_utils.py" \
             --input_file "$PRED_FILE" \
             --output_file "$OUTPUT_DIR/metrics.json" \
             --verbose
