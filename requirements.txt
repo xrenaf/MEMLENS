@@ -1,0 +1,21 @@
+# Core
+torch>=2.1.0
+transformers>=4.45.0
+accelerate>=1.0.0
+Pillow
+tqdm
+numpy
+
+# API models
+openai>=1.0.0
+
+# Scoring
+# (no additional deps — metric.py + answer_extraction.py use only stdlib + openai)
+
+# Optional: API providers (install as needed)
+# anthropic>=0.20.0        # for Claude models
+# google-generativeai      # for Gemini models
+
+# Optional: inference backends
+# vllm                     # for vLLM-served models
+# flash-attn               # for flash attention acceleration
