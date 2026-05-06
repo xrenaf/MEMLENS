@@ -291,15 +291,15 @@ def is_insufficient_information(prediction: str) -> bool:
 # Step 8: Batch scoring + aggregation
 # ============================================================
 
-def _get_major_type(question_id: str) -> str:
-    """Infer major type from question_id hex prefix."""
-    try:
-        qid_int = int(question_id, 16) if isinstance(question_id, str) and question_id else 0
-    except (ValueError, TypeError):
-        return ""
-    if 0x5000000 <= qid_int < 0x6000000:
-        return "abstention"
-    return "answerable"
+# Question types that count as "abstention" — the model is expected to refuse
+# because the haystack does not contain enough information to answer.
+# (Dataset README: the "answer_refusal" type is the abstention category.)
+_ABSTENTION_QUESTION_TYPES = frozenset({"answer_refusal"})
+
+
+def _is_abstention(question_type: str) -> bool:
+    """Whether a question_type belongs to the abstention/refusal category."""
+    return question_type in _ABSTENTION_QUESTION_TYPES
 
 
 def compute_metrics(
@@ -317,11 +317,9 @@ def compute_metrics(
     Returns:
         (metrics_dict, per_item_details_list)
     """
-    total = len(data)
-    if total == 0:
-        return {"overall": {}, "by_question_type": {}}, []
-
-    # Accumulators
+    # Accumulators (the post-loop math has divide-by-zero guards, so empty
+    # input flows through to a fully-zeroed metrics dict with the same shape
+    # as a populated one — print_metrics depends on that shape).
     overall = {"sub_em": 0, "f1_sum": 0.0, "refusal": 0, "count": 0}
     answerable = {"sub_em": 0, "f1_sum": 0.0, "count": 0}
     abstention = {"correct": 0, "count": 0}
@@ -347,7 +345,6 @@ def compute_metrics(
         sem = sub_em(prediction, reference)
         f1, prec, rec = f1_score(prediction, reference)
         is_refusal = is_insufficient_information(prediction)
-        major = _get_major_type(qid)
 
         # Accumulate overall
         overall["count"] += 1
@@ -366,7 +363,7 @@ def compute_metrics(
             by_type[qtype]["refusal"] += 1
 
         # Accumulate answerable vs abstention
-        if major == "abstention":
+        if _is_abstention(qtype):
             abstention["count"] += 1
             if is_refusal:
                 abstention["correct"] += 1
@@ -388,7 +385,7 @@ def compute_metrics(
 
         if verbose:
             mark = "+" if sem else "-"
-            ref_str = "REFUSAL" if major == "abstention" else f"'{reference}'"
+            ref_str = "REFUSAL" if _is_abstention(qtype) else f"'{reference}'"
             print(f"  {mark} {qid} [{qtype}] SubEM={int(sem)} F1={f1:.2f} "
                   f"Ref={ref_str} Pred='{prediction[:80]}...' " if len(prediction) > 80
                   else f"  {mark} {qid} [{qtype}] SubEM={int(sem)} F1={f1:.2f} "

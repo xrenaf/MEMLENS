@@ -89,8 +89,9 @@ def detect_answer_subtype(question_id: str, reference_answer: str, question_type
     except (ValueError, TypeError):
         pass
 
-    # Abstention type (0x5000000 - 0x5FFFFFF)
-    if 0x5000000 <= qid_int < 0x6000000 or question_type == "abstention":
+    # Abstention type — the model is expected to refuse because the haystack
+    # does not contain enough information to answer.
+    if question_type == "answer_refusal":
         return SUBTYPE_ABSTENTION
 
     # Duration A/B — reference is exactly "A" or "B"
