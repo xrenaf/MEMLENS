@@ -58,10 +58,10 @@ pip install google-generativeai  # Gemini
 
 Set your API keys as environment variables:
 ```bash
-export OPENAI_API_KEY=sk-...
-export ANTHROPIC_API_KEY=sk-ant-...
-export GOOGLE_API_KEY=...
-export MOONSHOT_API_KEY=...   # for Kimi K2.5
+export OPENAI_API_KEY=<your-openai-api-key>
+export ANTHROPIC_API_KEY=<your-anthropic-api-key>
+export GOOGLE_API_KEY=<your-google-api-key>
+export MOONSHOT_API_KEY=<your-moonshot-api-key>   # for Kimi K2.5
 ```
 
 ## Data
@@ -191,20 +191,7 @@ For convenience, `scripts/run_benchmark.sh` wraps evaluation + metric computatio
 
 ## Scoring
 
-### Stage 1: Deterministic Metrics
-
-Deterministic metrics (SubEM, F1, refusal detection, calibration) are computed **inline during evaluation** — no separate scoring step needed. To re-score saved predictions:
-
-```bash
-python parse_utils.py \
-    --input_file results/model_32k/dataset_32k_*.json \
-    --output_file results/model_32k/metrics.json \
-    --verbose
-```
-
-### Stage 2: LLM-as-Judge
-
-For more accurate scoring, use the LLM judge:
+MemLens uses `llm_judge.py` as the official scoring method reported in the paper. The judge reads the prediction JSON produced by `eval.py` or `eval_api.py`, compares each model answer against the question metadata and reference answer, and writes both per-item decisions and aggregate metrics.
 
 ```bash
 python llm_judge.py \
@@ -214,25 +201,14 @@ python llm_judge.py \
     --verbose
 ```
 
-The judge requires a separate vLLM server running a capable judge model (e.g., Qwen3-VL-235B).
-
-### Stage 3: Extract-then-Match (Hybrid)
-
-```bash
-python answer_extraction.py \
-    --input_file results/model_32k/dataset_32k_*.json \
-    --output_file results/model_32k/metrics_extracted.json \
-    --model gpt-4o --verbose
-```
-
-Uses an LLM to extract the core answer from verbose model output, then applies type-specific deterministic matching.
+The judge requires a separate vLLM server running a capable judge model, such as Qwen3-VL-235B, exposed through an OpenAI-compatible endpoint.
 
 ### Output Format
 
-Each evaluation run produces:
-- **Results JSON**: Per-sample predictions with `question_id`, `prediction`, `parsed_pred`
-- **Metrics JSON**: Aggregate scores by question type
-- **Judge results**: `judge_details.json` (per-item) + `judge_metrics.json` (aggregated)
+Evaluation and scoring produce:
+- **Results JSON**: per-sample predictions from `eval.py` or `eval_api.py`, including `question_id` and `prediction`
+- **Judge details**: `judge_details.json`, with the judge decision for each evaluated sample
+- **Judge metrics**: `judge_metrics.json`, with aggregate scores by question type and overall performance
 
 ## Supported Models
 
@@ -306,9 +282,9 @@ MEMLENS/
   eval.py                 # Local model evaluation (HF / vLLM)
   eval_api.py             # API model evaluation (concurrent, resumable)
   data.py                 # Data loading & multimodal context assembly
-  parse_utils.py          # Parsing, scoring (SubEM, F1, calibration), aggregation
-  answer_extraction.py    # LLM-based answer extraction + type-specific matching
-  llm_judge.py            # LLM-as-judge scoring
+  parse_utils.py          # Parsing utilities used by evaluation and analysis
+  answer_extraction.py    # Optional answer extraction utility
+  llm_judge.py            # Official LLM-as-judge scoring used in the paper
   utils.py                # Image path resolution
   vlm_models/             # Model wrappers (22 models)
   scripts/                # Example shell scripts
@@ -334,4 +310,4 @@ MEMLENS/
 
 ## Acknowledgment
 
-The evaluation code is built on top of [MMLongBench](https://github.com/EdinburghNLP/MMLongBench) and [HELMET](https://github.com/princeton-nlp/HELMET). We made extensive revisions for multi-session multimodal evaluation, including custom data loading, five question-type-specific metrics, LLM-as-judge scoring, and 22 model wrappers.
+The evaluation code is built on top of [MMLongBench](https://github.com/EdinburghNLP/MMLongBench) and [HELMET](https://github.com/princeton-nlp/HELMET). We made extensive revisions for multi-session multimodal evaluation, including custom data loading, LLM-as-judge scoring across five question types, and 22 model wrappers.

@@ -46,9 +46,10 @@ python eval.py \
     --dtype bfloat16
 
 # ─────────────────────────────────────────────────────────────
-# Example 3: Run metrics after evaluation
+# Example 3: Score predictions with the LLM judge
 # ─────────────────────────────────────────────────────────────
-python metric.py \
+python llm_judge.py \
     --input_file results/qwen3vl-8b_32k/dataset_32k_*.json \
-    --output_file results/qwen3vl-8b_32k/metrics.json \
+    --output_dir results/qwen3vl-8b_32k/ \
+    --vllm_base_url http://localhost:8001/v1 \
     --verbose

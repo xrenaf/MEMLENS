@@ -11,7 +11,7 @@ Usage:
 """
 
 import os
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Tuple
 from PIL import Image
 
 try:
@@ -24,7 +24,7 @@ except ImportError:
 
 from .model_utils import (
     LLM, format_chat, load_images, resize_image_max_size,
-    encode_image_base64, summarize_messages, call_api,
+    encode_image_base64, summarize_messages, call_api, count_message_images,
 )
 
 import logging
@@ -78,6 +78,97 @@ def format_chat_anthropic(messages: List[Dict]) -> List[Dict]:
     return result
 
 
+def _extract_anthropic_image_value(item: Dict) -> Optional[Any]:
+    item_type = item.get("type")
+    if item_type == "image":
+        return item.get("image")
+    if item_type in ("image_url", "input_image"):
+        image_url = item.get("image_url")
+        if isinstance(image_url, dict):
+            return image_url.get("url")
+        return image_url
+    return None
+
+
+def format_messages_anthropic(messages: List[Dict]) -> Tuple[Optional[str], List[Dict]]:
+    """Convert canonical structured messages to Anthropic system + messages."""
+    system_parts: List[str] = []
+    result: List[Dict] = []
+
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+
+        if role == "system":
+            if isinstance(content, str):
+                if content.strip():
+                    system_parts.append(content.strip())
+            elif isinstance(content, list):
+                for item in content:
+                    if item.get("type") in ("text", "input_text"):
+                        text = item.get("text", "").strip()
+                        if text:
+                            system_parts.append(text)
+            continue
+
+        anthropic_role = "assistant" if role == "assistant" else "user"
+        items = []
+
+        if isinstance(content, str):
+            if content.strip():
+                items.append({"type": "text", "text": content})
+        elif isinstance(content, list):
+            for item in content:
+                item_type = item.get("type")
+                if item_type in ("text", "input_text", "output_text"):
+                    text = item.get("text", "")
+                    if text.strip():
+                        items.append({"type": "text", "text": text})
+                elif item_type in ("image", "image_url", "input_image"):
+                    img = _extract_anthropic_image_value(item)
+                    if isinstance(img, Image.Image):
+                        b64 = encode_image_base64(img)
+                        items.append({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": b64,
+                            },
+                        })
+                    elif isinstance(img, str) and img.startswith(("http://", "https://")):
+                        items.append({
+                            "type": "image",
+                            "source": {
+                                "type": "url",
+                                "url": img,
+                            },
+                        })
+                    elif isinstance(img, str):
+                        try:
+                            image = Image.open(img).convert("RGB")
+                            b64 = encode_image_base64(image)
+                            items.append({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": b64,
+                                },
+                            })
+                        except Exception as e:
+                            logger.warning(f"Failed to load image for Anthropic input {img}: {e}")
+
+        if items:
+            if result and result[-1]["role"] == anthropic_role:
+                result[-1]["content"].extend(items)
+            else:
+                result.append({"role": anthropic_role, "content": items})
+
+    system = "\n\n".join(system_parts) if system_parts else None
+    return system, result
+
+
 class AnthropicModel(LLM):
     """Anthropic Claude model via the Messages API."""
 
@@ -126,6 +217,14 @@ class AnthropicModel(LLM):
         )
 
     def prepare_inputs(self, test_item: Dict[str, Any], data: Dict[str, Any]) -> Any:
+        if test_item.get("messages"):
+            system, api_messages = format_messages_anthropic(test_item["messages"])
+            return {
+                "system": system,
+                "messages": api_messages,
+                "image_count": count_message_images(test_item["messages"]),
+            }
+
         text = data["user_template"].format(
             context=test_item.get("context", ""),
             question=test_item.get("question", ""),
@@ -140,6 +239,7 @@ class AnthropicModel(LLM):
         api_messages = format_chat_anthropic(messages)
 
         return {
+            "system": None,
             "messages": api_messages,
             "image_count": len(test_item.get("image_list", [])),
         }
@@ -150,6 +250,8 @@ class AnthropicModel(LLM):
             messages=inputs["messages"],
             max_tokens=self.generation_max_length,
         )
+        if inputs.get("system"):
+            api_kwargs["system"] = inputs["system"]
 
         # Anthropic API (via proxy): temperature and top_p cannot both be specified.
         # When not sampling, only set temperature=0.0 (top_p defaults to 1.0 server-side).

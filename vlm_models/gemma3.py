@@ -17,7 +17,7 @@ from PIL import Image
 
 from transformers import AutoProcessor, Gemma3ForConditionalGeneration
 
-from .model_utils import LLM, load_images, truncate_images
+from .model_utils import LLM, load_images, truncate_images, messages_to_hf_chat
 
 import logging
 logger = logging.getLogger(__name__)
@@ -167,29 +167,38 @@ class Gemma3HFModel(LLM):
         return messages
 
     def prepare_inputs(self, test_item: Dict[str, Any], data: Dict[str, Any]) -> Any:
-        text = data["user_template"].format(
-            context=test_item.get("context", ""),
-            question=test_item.get("question", ""),
-            question_date=test_item.get("question_date", "unknown"),
-        )
+        if test_item.get("messages") and self.max_image_num is None:
+            messages = messages_to_hf_chat(test_item["messages"], image_key="url")
+            image_inputs = [
+                item.get("url")
+                for msg in messages
+                for item in msg.get("content", [])
+                if item.get("type") == "image"
+            ]
+        else:
+            text = data["user_template"].format(
+                context=test_item.get("context", ""),
+                question=test_item.get("question", ""),
+                question_date=test_item.get("question_date", "unknown"),
+            )
 
-        image_list = test_item.get("image_list", [])
-        if self.max_image_num is not None:
-            text, image_list = truncate_images(text, image_list, self.max_image_num)
+            image_list = test_item.get("image_list", [])
+            if self.max_image_num is not None:
+                text, image_list = truncate_images(text, image_list, self.max_image_num)
 
-        # Load images as PIL or keep as URLs/paths
-        loaded_images = load_images(image_list)
+            # Load images as PIL or keep as URLs/paths
+            loaded_images = load_images(image_list)
 
-        # Build messages — Gemma3 processor expects URLs or PIL images via "url" key
-        # For local files, pass the file path as url (processor handles it)
-        image_inputs = []
-        for img in loaded_images:
-            if isinstance(img, Image.Image):
-                image_inputs.append(img)
-            else:
-                image_inputs.append(img)  # URL string
+            # Build messages — Gemma3 processor expects URLs or PIL images via "url" key
+            # For local files, pass the file path as url (processor handles it)
+            image_inputs = []
+            for img in loaded_images:
+                if isinstance(img, Image.Image):
+                    image_inputs.append(img)
+                else:
+                    image_inputs.append(img)  # URL string
 
-        messages = self._build_messages(text, image_inputs, data.get("system_template", ""))
+            messages = self._build_messages(text, image_inputs, data.get("system_template", ""))
 
         inputs = self.processor.apply_chat_template(
             messages,

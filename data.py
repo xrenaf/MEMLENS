@@ -21,6 +21,17 @@ INSTRUCTION_REASONING = (
 )
 
 
+SYSTEM_TEMPLATE = (
+    "Provide answers based on the given conversation history. "
+    "If the question cannot be answered based on the given conversation, "
+    'respond with "Insufficient information".'
+)
+
+QUESTION_TEMPLATE = """{instruction}
+Question Date: {question_date}
+Question: {question}
+"""
+
 USER_TEMPLATE = """Provide answers based on the given conversation history. If the question cannot be answered based on the given conversation, respond with "Insufficient information".
 Conversation:
 {context}
@@ -29,6 +40,144 @@ Conversation:
 Question Date: {question_date}
 Question: {question}
 """
+
+
+def _text_block(text: str) -> Dict[str, str]:
+    return {"type": "text", "text": text}
+
+
+def _image_block(path_or_url: str) -> Dict[str, Dict[str, str]]:
+    return {"type": "image_url", "image_url": {"url": path_or_url}}
+
+
+def _append_turn_blocks(
+    blocks: List[Dict],
+    text: str,
+    image_paths: List[str],
+    label_images: bool,
+    image_offset: int,
+) -> int:
+    """Append OpenAI-style content blocks for one turn.
+
+    Returns the next global 1-based image index offset.
+    """
+    if image_paths:
+        image_idx = 0
+        if "<image>" in text:
+            for part in re.split(r'(<image>)', text):
+                if part == "<image>":
+                    if image_idx < len(image_paths):
+                        if label_images:
+                            blocks.append(_text_block(f"[Image {image_offset + image_idx + 1}]"))
+                        blocks.append(_image_block(image_paths[image_idx]))
+                        image_idx += 1
+                elif part.strip():
+                    blocks.append(_text_block(part))
+
+            # If metadata has more images than placeholders, preserve them after the text.
+            while image_idx < len(image_paths):
+                if label_images:
+                    blocks.append(_text_block(f"[Image {image_offset + image_idx + 1}]"))
+                blocks.append(_image_block(image_paths[image_idx]))
+                image_idx += 1
+        else:
+            for image_idx, path in enumerate(image_paths):
+                if label_images:
+                    blocks.append(_text_block(f"[Image {image_offset + image_idx + 1}]"))
+                blocks.append(_image_block(path))
+            stripped = text.strip()
+            if stripped:
+                blocks.append(_text_block(stripped))
+    else:
+        stripped = text.replace("<image>", "").strip()
+        if stripped:
+            blocks.append(_text_block(stripped))
+
+    return image_offset + len(image_paths)
+
+
+def _prepend_session_header(blocks: List[Dict], header: str) -> List[Dict]:
+    if blocks and blocks[0].get("type") == "text":
+        blocks[0] = {**blocks[0], "text": f"{header}\n{blocks[0].get('text', '')}"}
+        return blocks
+    return [_text_block(header), *blocks]
+
+
+def build_messages(
+    item: Dict,
+    image_dir: str,
+    instruction: str,
+    label_images: bool = False,
+    no_context: bool = False,
+    prefer_url: bool = False,
+    text_only: bool = False,
+) -> Tuple[List[Dict], List[str]]:
+    """Build OpenAI-style chat messages from multi-session conversation data.
+
+    The returned messages keep the original user/assistant turn structure instead
+    of flattening all sessions into one long user string. Images stay attached to
+    the turn where they appear.
+    """
+    messages = [
+        {
+            "role": "system",
+            "content": [_text_block(SYSTEM_TEMPLATE)],
+        }
+    ]
+    images: List[str] = []
+
+    if not no_context:
+        sessions = item.get("haystack_sessions", [])
+        dates = item.get("haystack_dates", [])
+        image_offset = 0
+
+        for i, session in enumerate(sessions, 1):
+            if isinstance(session, dict):
+                date_str = session.get("date", "unknown")
+                turns = session.get("session", [])
+            else:
+                date_str = dates[i - 1] if i - 1 < len(dates) else "unknown"
+                turns = session
+
+            header = f"=== Session {i} (Date: {date_str}) ==="
+            header_pending = True
+
+            for turn in turns:
+                role = "assistant" if turn.get("role") == "assistant" else "user"
+                text = turn.get("content", "")
+                turn_images = [] if text_only else turn.get("images", [])
+
+                resolved_paths = []
+                for img_info in turn_images:
+                    path = resolve_image_path(img_info, image_dir, prefer_url=prefer_url)
+                    if path:
+                        resolved_paths.append(path)
+                images.extend(resolved_paths)
+
+                blocks: List[Dict] = []
+                if text_only:
+                    text = text.replace("<image>", "").strip()
+                    if text:
+                        blocks.append(_text_block(text))
+                else:
+                    image_offset = _append_turn_blocks(
+                        blocks, text, resolved_paths, label_images, image_offset
+                    )
+
+                if header_pending:
+                    blocks = _prepend_session_header(blocks, header)
+                    header_pending = False
+
+                if blocks:
+                    messages.append({"role": role, "content": blocks})
+
+    question_text = QUESTION_TEMPLATE.format(
+        instruction=instruction,
+        question_date=item.get("question_date", "unknown"),
+        question=item.get("question", ""),
+    )
+    messages.append({"role": "user", "content": [_text_block(question_text)]})
+    return messages, images
 
 
 def build_context(
@@ -177,13 +326,24 @@ def load_data(
 
     for item in data:
         context, image_list = build_context(item, image_dir, label_images, no_context=no_context, prefer_url=prefer_url, text_only=text_only)
+        messages, message_image_list = build_messages(
+            item,
+            image_dir,
+            instruction,
+            label_images=label_images,
+            no_context=no_context,
+            prefer_url=prefer_url,
+            text_only=text_only,
+        )
         total_images += len(image_list)
 
         processed.append({
             "context": context,
+            "messages": messages,
             "question": item.get("question", ""),
             "question_date": item.get("question_date", "unknown"),
             "image_list": image_list,
+            "message_image_list": message_image_list,
             "answer": item.get("answer", ""),
             "question_id": item.get("question_id"),
             "question_type": item.get("question_type"),

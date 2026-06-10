@@ -32,7 +32,8 @@ except ImportError:
 
 from .model_utils import (
     LLM, format_chat, load_images, resize_image_max_size,
-    format_chat_responses_api, summarize_messages, call_api,
+    format_chat_responses_api, messages_to_openai_responses_input,
+    count_message_images, call_api,
 )
 
 import logging
@@ -89,6 +90,17 @@ class OpenAIModel(LLM):
         )
 
     def prepare_inputs(self, test_item: Dict[str, Any], data: Dict[str, Any]) -> Any:
+        if test_item.get("messages"):
+            api_input = messages_to_openai_responses_input(
+                test_item["messages"],
+                image_detail=self.image_detail,
+                max_image_size=self.max_image_size,
+            )
+            return {
+                "input": api_input,
+                "image_count": count_message_images(test_item["messages"]),
+            }
+
         text = data["user_template"].format(
             context=test_item.get("context", ""),
             question=test_item.get("question", ""),

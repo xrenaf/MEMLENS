@@ -19,7 +19,7 @@ except ImportError:
     Qwen3_5ForConditionalGeneration = None
 from qwen_vl_utils import process_vision_info
 
-from .model_utils import LLM, format_chat, load_images
+from .model_utils import LLM, format_chat, load_images, messages_to_hf_chat
 
 import logging
 logger = logging.getLogger(__name__)
@@ -193,14 +193,17 @@ class Qwen3VLModel(LLM):
 
     def prepare_inputs(self, test_item: Dict[str, Any], data: Dict[str, Any]) -> Any:
         """Prepare inputs from vl-longbench format."""
-        text = data["user_template"].format(
-            context=test_item.get("context", ""),
-            question=test_item.get("question", ""),
-            question_date=test_item.get("question_date", "unknown"),
-        )
+        if test_item.get("messages"):
+            messages = messages_to_hf_chat(test_item["messages"])
+        else:
+            text = data["user_template"].format(
+                context=test_item.get("context", ""),
+                question=test_item.get("question", ""),
+                question_date=test_item.get("question_date", "unknown"),
+            )
 
-        image_inputs = load_images(test_item.get("image_list", []))
-        messages = format_chat(text, image_inputs, data.get("system_template", ""))
+            image_inputs = load_images(test_item.get("image_list", []))
+            messages = format_chat(text, image_inputs, data.get("system_template", ""))
 
         text = self.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True

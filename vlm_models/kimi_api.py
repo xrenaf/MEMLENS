@@ -30,7 +30,7 @@ except ImportError:
 
 from .model_utils import (
     LLM, format_chat, load_images, resize_image_max_size,
-    format_chat_openai, call_api,
+    format_chat_openai, call_api, messages_to_openai_chat, count_message_images,
 )
 
 import logging
@@ -111,6 +111,17 @@ class KimiModel(LLM):
         return result
 
     def prepare_inputs(self, test_item: Dict[str, Any], data: Dict[str, Any]) -> Any:
+        if test_item.get("messages"):
+            api_messages = messages_to_openai_chat(
+                test_item["messages"],
+                max_image_size=self.max_image_size,
+                preserve_remote_urls=False,
+            )
+            return {
+                "messages": api_messages,
+                "image_count": count_message_images(test_item["messages"]),
+            }
+
         text = data["user_template"].format(
             context=test_item.get("context", ""),
             question=test_item.get("question", ""),

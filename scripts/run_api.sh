@@ -13,7 +13,7 @@ cd "$SCRIPT_DIR/.."
 # ─────────────────────────────────────────────────────────────
 # Example 1: GPT-4o
 # ─────────────────────────────────────────────────────────────
-# Requires: export OPENAI_API_KEY=sk-...
+# Requires: export OPENAI_API_KEY=<your-openai-api-key>
 
 python eval_api.py \
     --model_name_or_path gpt-4o \
@@ -28,7 +28,7 @@ python eval_api.py \
 # ─────────────────────────────────────────────────────────────
 # Example 2: Claude Sonnet 4
 # ─────────────────────────────────────────────────────────────
-# Requires: export ANTHROPIC_API_KEY=sk-ant-...
+# Requires: export ANTHROPIC_API_KEY=<your-anthropic-api-key>
 
 python eval_api.py \
     --model_name_or_path claude-sonnet-4-20250514 \
@@ -42,7 +42,7 @@ python eval_api.py \
 # ─────────────────────────────────────────────────────────────
 # Example 3: Gemini 3.1 Pro
 # ─────────────────────────────────────────────────────────────
-# Requires: export GOOGLE_API_KEY=...
+# Requires: export GOOGLE_API_KEY=<your-google-api-key>
 
 python eval_api.py \
     --model_name_or_path gemini-3.1-pro-preview \
@@ -54,9 +54,10 @@ python eval_api.py \
     --batch_size 4
 
 # ─────────────────────────────────────────────────────────────
-# Example 4: Compute metrics after evaluation
+# Example 4: Score predictions with the LLM judge
 # ─────────────────────────────────────────────────────────────
-python metric.py \
+python llm_judge.py \
     --input_file results/gpt4o_32k/dataset_32k_*.json \
-    --output_file results/gpt4o_32k/metrics.json \
+    --output_dir results/gpt4o_32k/ \
+    --vllm_base_url http://localhost:8001/v1 \
     --verbose

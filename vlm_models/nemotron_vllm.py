@@ -24,7 +24,10 @@ try:
 except ImportError:
     raise ImportError("The 'openai' package is required for vLLM backend.")
 
-from .model_utils import LLM, format_chat, load_images, format_chat_openai, summarize_messages
+from .model_utils import (
+    LLM, format_chat, load_images, format_chat_openai, summarize_messages,
+    messages_to_openai_chat, count_message_images,
+)
 
 import logging
 logger = logging.getLogger(__name__)
@@ -72,6 +75,15 @@ class NemotronVLLMModel(LLM):
         logger.info(f"[NemotronVLLM] use_no_think={self.use_no_think}")
 
     def prepare_inputs(self, test_item: Dict[str, Any], data: Dict[str, Any]) -> Any:
+        if test_item.get("messages"):
+            messages = test_item["messages"]
+            if self.use_no_think:
+                messages = [{"role": "system", "content": "/no_think"}] + messages
+            return {
+                "messages": messages_to_openai_chat(messages),
+                "image_count": count_message_images(test_item["messages"]),
+            }
+
         text = data["user_template"].format(
             context=test_item.get("context", ""),
             question=test_item.get("question", ""),

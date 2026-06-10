@@ -20,7 +20,7 @@ from transformers import (
 )
 from PIL import Image
 
-from .model_utils import LLM, format_chat, resize_image_max_size, load_images
+from .model_utils import LLM, format_chat, resize_image_max_size, load_images, messages_to_hf_chat
 
 import logging
 logger = logging.getLogger(__name__)
@@ -305,26 +305,39 @@ class NemotronVLModel(LLM):
         Returns:
             Processed inputs ready for model.generate()
         """
-        # Build prompt from user_template + context (same pattern as Qwen models)
-        text = data["user_template"].format(
-            context=test_item.get("context", ""),
-            question=test_item.get("question", ""),
-            question_date=test_item.get("question_date", "unknown"),
-        )
+        if test_item.get("messages"):
+            messages = messages_to_hf_chat(
+                test_item["messages"],
+                max_image_size=self.max_image_size,
+            )
+            pil_images = [
+                item.get("image")
+                for msg in messages
+                for item in msg.get("content", [])
+                if item.get("type") == "image"
+            ]
+            num_images = len(pil_images)
+        else:
+            # Build prompt from user_template + context (same pattern as Qwen models)
+            text = data["user_template"].format(
+                context=test_item.get("context", ""),
+                question=test_item.get("question", ""),
+                question_date=test_item.get("question_date", "unknown"),
+            )
 
-        # Load images from file paths
-        pil_images = load_images(test_item.get("image_list", []))
+            # Load images from file paths
+            pil_images = load_images(test_item.get("image_list", []))
 
-        num_images = len(pil_images)
-        if num_images > 0:
-            logger.info(f"[NemotronVL:prepare_inputs] Processing {num_images} images")
+            num_images = len(pil_images)
+            if num_images > 0:
+                logger.info(f"[NemotronVL:prepare_inputs] Processing {num_images} images")
 
-            # Resize images
-            if self.max_image_size:
-                pil_images = resize_image_max_size(pil_images, self.max_image_size)
+                # Resize images
+                if self.max_image_size:
+                    pil_images = resize_image_max_size(pil_images, self.max_image_size)
 
-        # Format as chat messages
-        messages = self.format_chat(text, pil_images, system_prompt="")
+            # Format as chat messages
+            messages = self.format_chat(text, pil_images, system_prompt="")
 
         # Inject /no_think system prompt if enabled
         messages = self._inject_no_think_system(messages)

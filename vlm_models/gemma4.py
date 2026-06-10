@@ -16,7 +16,7 @@ from PIL import Image
 
 from transformers import AutoProcessor, Gemma4ForConditionalGeneration
 
-from .model_utils import LLM, load_images, truncate_images
+from .model_utils import LLM, load_images, truncate_images, messages_to_hf_chat
 
 import logging
 logger = logging.getLogger(__name__)
@@ -160,26 +160,35 @@ class Gemma4HFModel(LLM):
         return messages
 
     def prepare_inputs(self, test_item: Dict[str, Any], data: Dict[str, Any]) -> Any:
-        text = data["user_template"].format(
-            context=test_item.get("context", ""),
-            question=test_item.get("question", ""),
-            question_date=test_item.get("question_date", "unknown"),
-        )
+        if test_item.get("messages") and self.max_image_num is None:
+            messages = messages_to_hf_chat(test_item["messages"], image_key="url")
+            image_inputs = [
+                item.get("url")
+                for msg in messages
+                for item in msg.get("content", [])
+                if item.get("type") == "image"
+            ]
+        else:
+            text = data["user_template"].format(
+                context=test_item.get("context", ""),
+                question=test_item.get("question", ""),
+                question_date=test_item.get("question_date", "unknown"),
+            )
 
-        image_list = test_item.get("image_list", [])
-        if self.max_image_num is not None:
-            text, image_list = truncate_images(text, image_list, self.max_image_num)
+            image_list = test_item.get("image_list", [])
+            if self.max_image_num is not None:
+                text, image_list = truncate_images(text, image_list, self.max_image_num)
 
-        loaded_images = load_images(image_list)
+            loaded_images = load_images(image_list)
 
-        image_inputs = []
-        for img in loaded_images:
-            if isinstance(img, Image.Image):
-                image_inputs.append(img)
-            else:
-                image_inputs.append(img)
+            image_inputs = []
+            for img in loaded_images:
+                if isinstance(img, Image.Image):
+                    image_inputs.append(img)
+                else:
+                    image_inputs.append(img)
 
-        messages = self._build_messages(text, image_inputs, data.get("system_template", ""))
+            messages = self._build_messages(text, image_inputs, data.get("system_template", ""))
 
         # Use apply_chat_template with enable_thinking=False (instruct mode)
         inputs = self.processor.apply_chat_template(

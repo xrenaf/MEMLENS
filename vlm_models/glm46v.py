@@ -30,7 +30,7 @@ from transformers import (
 )
 from PIL import Image
 
-from .model_utils import LLM, format_chat, resize_image_max_size
+from .model_utils import LLM, format_chat, resize_image_max_size, messages_to_hf_chat
 
 import logging
 logger = logging.getLogger(__name__)
@@ -98,35 +98,41 @@ class GLM46VModel(LLM):
 
     def prepare_inputs(self, test_item: Dict[str, Any], data: Dict[str, Any]) -> Any:
         """Prepare inputs from vl-longbench format."""
-        text = data["user_template"].format(
-            context=test_item.get("context", ""),
-            question=test_item.get("question", ""),
-            question_date=test_item.get("question_date", "unknown"),
-        )
+        if test_item.get("messages"):
+            messages = messages_to_hf_chat(
+                test_item["messages"],
+                max_image_size=self.max_image_size,
+            )
+        else:
+            text = data["user_template"].format(
+                context=test_item.get("context", ""),
+                question=test_item.get("question", ""),
+                question_date=test_item.get("question_date", "unknown"),
+            )
 
-        # Load and resize images
-        image_paths = test_item.get("image_list", [])
-        image_inputs = []
-        for path in image_paths:
-            if path.startswith(("http://", "https://")):
-                image_inputs.append(path)
-            else:
-                try:
-                    image_inputs.append(Image.open(path).convert("RGB"))
-                except Exception as e:
-                    logger.warning(f"Failed to load image {path}: {e}")
+            # Load and resize images
+            image_paths = test_item.get("image_list", [])
+            image_inputs = []
+            for path in image_paths:
+                if path.startswith(("http://", "https://")):
+                    image_inputs.append(path)
+                else:
+                    try:
+                        image_inputs.append(Image.open(path).convert("RGB"))
+                    except Exception as e:
+                        logger.warning(f"Failed to load image {path}: {e}")
 
-        pil_images = [img for img in image_inputs if isinstance(img, Image.Image)]
-        if pil_images and self.max_image_size:
-            pil_images = resize_image_max_size(pil_images, self.max_image_size)
-            pil_idx = 0
-            for i, img in enumerate(image_inputs):
-                if isinstance(img, Image.Image):
-                    image_inputs[i] = pil_images[pil_idx]
-                    pil_idx += 1
+            pil_images = [img for img in image_inputs if isinstance(img, Image.Image)]
+            if pil_images and self.max_image_size:
+                pil_images = resize_image_max_size(pil_images, self.max_image_size)
+                pil_idx = 0
+                for i, img in enumerate(image_inputs):
+                    if isinstance(img, Image.Image):
+                        image_inputs[i] = pil_images[pil_idx]
+                        pil_idx += 1
 
-        # Build chat messages
-        messages = format_chat(text, image_inputs, data.get("system_template", ""))
+            # Build chat messages
+            messages = format_chat(text, image_inputs, data.get("system_template", ""))
 
         # Processor tokenizes + processes images → input_ids, pixel_values, image_grid_thw
         inputs = self.processor.apply_chat_template(

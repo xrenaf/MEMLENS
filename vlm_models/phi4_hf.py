@@ -19,7 +19,7 @@ from typing import Dict, Any
 from transformers import AutoModelForCausalLM, AutoProcessor, AutoConfig, GenerationConfig
 from PIL import Image
 
-from .model_utils import LLM, load_images
+from .model_utils import LLM, load_images, messages_to_text_with_image_tokens
 
 import logging
 logger = logging.getLogger(__name__)
@@ -131,13 +131,16 @@ class Phi4HFModel(LLM):
         return prompt
 
     def prepare_inputs(self, test_item: Dict[str, Any], data: Dict[str, Any]) -> Any:
-        text = data["user_template"].format(
-            context=test_item.get("context", ""),
-            question=test_item.get("question", ""),
-            question_date=test_item.get("question_date", "unknown"),
-        )
+        if test_item.get("messages"):
+            text, image_paths = messages_to_text_with_image_tokens(test_item["messages"])
+        else:
+            text = data["user_template"].format(
+                context=test_item.get("context", ""),
+                question=test_item.get("question", ""),
+                question_date=test_item.get("question_date", "unknown"),
+            )
 
-        image_paths = test_item.get("image_list", [])
+            image_paths = test_item.get("image_list", [])
         images = load_images(image_paths)
         # Filter out non-PIL entries (URLs that failed to load)
         pil_images = [img for img in images if isinstance(img, Image.Image)]

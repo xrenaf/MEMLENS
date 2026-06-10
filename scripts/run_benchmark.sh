@@ -6,6 +6,7 @@
 #   ./scripts/run_benchmark.sh --model Qwen/Qwen3-VL-8B-Instruct --dataset 32k --server-url http://host:8000
 #   ./scripts/run_benchmark.sh --model gpt-4o --dataset 64k --api
 #   ./scripts/run_benchmark.sh --model claude-sonnet-4-20250514 --dataset 128k --api
+#   ./scripts/run_benchmark.sh --model gpt-4o --dataset 32k --api --judge-url http://host:8001
 #   ./scripts/run_benchmark.sh --smoke-test --model Qwen/Qwen3-VL-8B-Instruct --dataset 32k --server-url http://host:8000
 #
 set -euo pipefail
@@ -20,6 +21,7 @@ IMAGE_DIR="${MEMLENS_IMAGE_DIR:-}"
 DATA_DIR="${MEMLENS_DATA_DIR:-${PROJECT_ROOT}/data}"
 OUTPUT_ROOT="${MEMLENS_OUTPUT_DIR:-${PROJECT_ROOT}/results}"
 SERVER_URL=""
+JUDGE_URL="${MEMLENS_JUDGE_URL:-}"
 IS_API=false
 GEN_MAX_LENGTH=128
 SMOKE_TEST=false
@@ -41,6 +43,8 @@ Required:
 Optional:
   --api                     Use API evaluation (eval_api.py instead of eval.py)
   --server-url URL          vLLM server URL (required for local models)
+  --judge-url URL           OpenAI-compatible judge server URL for llm_judge.py
+                            (or set MEMLENS_JUDGE_URL)
   --data-dir DIR            Dataset directory (default: ./data or MEMLENS_DATA_DIR)
   --output-dir DIR          Output directory (default: ./results or MEMLENS_OUTPUT_DIR)
   --mode MODE               Evaluation mode: direct (default) or reasoning
@@ -65,6 +69,7 @@ while [[ $# -gt 0 ]]; do
         --output-dir) OUTPUT_ROOT="$2"; shift 2 ;;
         --api) IS_API=true; shift ;;
         --server-url) SERVER_URL="$2"; shift 2 ;;
+        --judge-url) JUDGE_URL="$2"; shift 2 ;;
         --mode) MODE="$2"; shift 2 ;;
         --gen-max-length) GEN_MAX_LENGTH="$2"; shift 2 ;;
         --enable-thinking) ENABLE_THINKING=true; shift ;;
@@ -170,6 +175,9 @@ echo "  Output:    $OUTPUT_DIR"
 if [[ -n "$SERVER_URL" ]]; then
     echo "  Server:    $SERVER_URL"
 fi
+if [[ -n "$JUDGE_URL" ]]; then
+    echo "  Judge:     $JUDGE_URL"
+fi
 if [[ -n "$MAX_SAMPLES" ]]; then
     echo "  Samples:   $MAX_SAMPLES (limited)"
 fi
@@ -194,18 +202,27 @@ if [[ $EXIT_CODE -eq 0 ]]; then
     echo ""
     echo "[$(date)] Evaluation completed successfully."
 
-    # ── Re-score predictions ──
-    # eval.py / eval_api.py compute metrics inline and write them to the run's
-    # output JSON. We additionally invoke parse_utils.py here to produce a
-    # standalone metrics.json for convenience (e.g. for sweeping).
-    PRED_FILE=$(find "$OUTPUT_DIR" -name "*.json" -not -name "metrics.json" | head -1)
-    if [[ -n "$PRED_FILE" ]]; then
-        echo "[$(date)] Computing metrics..."
-        python "$PROJECT_ROOT/parse_utils.py" \
+    # ── Official scoring ──
+    PRED_FILE=$(find "$OUTPUT_DIR" -name "*.json" \
+        -not -name "judge_details.json" \
+        -not -name "judge_metrics.json" \
+        | head -1)
+    if [[ -n "$PRED_FILE" && -n "$JUDGE_URL" ]]; then
+        echo "[$(date)] Running LLM-as-judge scoring..."
+        JUDGE_BASE_URL="${JUDGE_URL%/}"
+        if [[ "$JUDGE_BASE_URL" != */v1 ]]; then
+            JUDGE_BASE_URL="${JUDGE_BASE_URL}/v1"
+        fi
+        python "$PROJECT_ROOT/llm_judge.py" \
             --input_file "$PRED_FILE" \
-            --output_file "$OUTPUT_DIR/metrics.json" \
+            --output_dir "$OUTPUT_DIR" \
+            --vllm_base_url "$JUDGE_BASE_URL" \
             --verbose
-        echo "[$(date)] Metrics saved to $OUTPUT_DIR/metrics.json"
+        echo "[$(date)] Judge scores saved to $OUTPUT_DIR/judge_metrics.json"
+    elif [[ -z "$JUDGE_URL" ]]; then
+        echo "[$(date)] Skipping scoring; pass --judge-url or set MEMLENS_JUDGE_URL to run llm_judge.py."
+    else
+        echo "[$(date)] No prediction JSON found for scoring."
     fi
 else
     echo ""

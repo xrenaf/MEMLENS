@@ -7,6 +7,7 @@ import re
 import io
 import time
 import base64
+import urllib.request
 from PIL import Image
 from typing import List, Optional, Callable, Any, Dict
 
@@ -75,13 +76,17 @@ def load_images(paths: List[str]) -> List:
     """Load images from file paths. Returns list of PIL Images or URLs."""
     images = []
     for path in paths:
-        if path.startswith(("http://", "https://")):
+        if isinstance(path, Image.Image):
             images.append(path)
-        else:
+        elif isinstance(path, str) and path.startswith(("http://", "https://")):
+            images.append(path)
+        elif isinstance(path, str):
             try:
                 images.append(Image.open(path).convert("RGB"))
             except Exception as e:
                 logger.warning(f"Failed to load image {path}: {e}")
+        else:
+            logger.warning(f"Unsupported image input type: {type(path).__name__}")
     return images
 
 
@@ -155,6 +160,230 @@ def format_chat_responses_api(messages: List[Dict], image_detail: str = "auto") 
                         })
             result.append({"role": role, "content": items})
     return result
+
+
+def _image_value_to_openai_url(
+    image_value: Any,
+    max_image_size: Optional[int] = None,
+    image_transform: Optional[Callable[[Image.Image], Image.Image]] = None,
+    preserve_remote_urls: bool = True,
+) -> Optional[str]:
+    """Return a URL/data URL acceptable to OpenAI image inputs."""
+    if isinstance(image_value, Image.Image):
+        image = image_value
+        if max_image_size:
+            image = resize_image_max_size([image], max_image_size)[0]
+        if image_transform:
+            image = image_transform(image)
+        return f"data:image/png;base64,{encode_image_base64(image)}"
+
+    if not isinstance(image_value, str) or not image_value:
+        return None
+
+    if image_value.startswith("data:image/"):
+        return image_value
+
+    if image_value.startswith(("http://", "https://")) and image_transform is None and preserve_remote_urls:
+        return image_value
+
+    try:
+        if image_value.startswith(("http://", "https://")):
+            req = urllib.request.Request(image_value, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=30) as response:
+                image = Image.open(io.BytesIO(response.read())).convert("RGB")
+        else:
+            image = Image.open(image_value).convert("RGB")
+        if max_image_size:
+            image = resize_image_max_size([image], max_image_size)[0]
+        if image_transform:
+            image = image_transform(image)
+        return f"data:image/png;base64,{encode_image_base64(image)}"
+    except Exception as e:
+        logger.warning(f"Failed to load image for OpenAI input {image_value}: {e}")
+        return None
+
+
+def _get_image_value(item: Dict) -> Optional[Any]:
+    if item.get("type") in ("image", "input_image"):
+        return item.get("image") or item.get("image_url")
+    if item.get("type") == "image_url":
+        image_url = item.get("image_url")
+        if isinstance(image_url, dict):
+            return image_url.get("url")
+        return image_url
+    return None
+
+
+def messages_to_openai_responses_input(
+    messages: List[Dict],
+    image_detail: str = "auto",
+    max_image_size: Optional[int] = None,
+) -> List[Dict]:
+    """Convert OpenAI-style canonical messages to Responses API input."""
+    result = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        items = []
+
+        if isinstance(content, str):
+            if content.strip():
+                items.append({"type": "input_text", "text": content})
+        elif isinstance(content, list):
+            for item in content:
+                item_type = item.get("type")
+                if item_type in ("text", "input_text"):
+                    text = item.get("text", "")
+                    if text.strip():
+                        text_type = "output_text" if role == "assistant" else "input_text"
+                        items.append({"type": text_type, "text": text})
+                elif item_type in ("image", "image_url", "input_image"):
+                    image_value = _get_image_value(item)
+                    image_url = _image_value_to_openai_url(image_value, max_image_size)
+                    if image_url:
+                        items.append({
+                            "type": "input_image",
+                            "image_url": image_url,
+                            "detail": item.get("detail", image_detail),
+                        })
+
+        if items:
+            result.append({"role": role, "content": items})
+    return result
+
+
+def messages_to_openai_chat(
+    messages: List[Dict],
+    max_image_size: Optional[int] = None,
+    image_transform: Optional[Callable[[Image.Image], Image.Image]] = None,
+    preserve_remote_urls: bool = True,
+) -> List[Dict]:
+    """Convert canonical messages to OpenAI Chat Completions/vLLM format."""
+    result = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        items = []
+
+        if isinstance(content, str):
+            if content.strip():
+                items.append({"type": "text", "text": content})
+        elif isinstance(content, list):
+            for item in content:
+                item_type = item.get("type")
+                if item_type in ("text", "input_text", "output_text"):
+                    text = item.get("text", "")
+                    if text.strip():
+                        items.append({"type": "text", "text": text})
+                elif item_type in ("image", "image_url", "input_image"):
+                    image_value = _get_image_value(item)
+                    image_url = _image_value_to_openai_url(
+                        image_value,
+                        max_image_size=max_image_size,
+                        image_transform=image_transform,
+                        preserve_remote_urls=preserve_remote_urls,
+                    )
+                    if image_url:
+                        items.append({"type": "image_url", "image_url": {"url": image_url}})
+
+        if items:
+            result.append({"role": role, "content": items})
+    return result
+
+
+def count_message_images(messages: List[Dict]) -> int:
+    """Count image blocks in canonical OpenAI-style messages."""
+    count = 0
+    for msg in messages:
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if item.get("type") in ("image", "image_url", "input_image"):
+                count += 1
+    return count
+
+
+def messages_to_hf_chat(
+    messages: List[Dict],
+    max_image_size: Optional[int] = None,
+    image_key: str = "image",
+) -> List[Dict]:
+    """Convert canonical messages to HF processor chat-template messages."""
+    hf_messages = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        hf_content = []
+
+        if isinstance(content, str):
+            if content.strip():
+                hf_content.append({"type": "text", "text": content})
+        elif isinstance(content, list):
+            for item in content:
+                item_type = item.get("type")
+                if item_type in ("text", "input_text"):
+                    text = item.get("text", "")
+                    if text.strip():
+                        hf_content.append({"type": "text", "text": text})
+                elif item_type in ("image", "image_url", "input_image"):
+                    image_value = _get_image_value(item)
+                    if isinstance(image_value, Image.Image):
+                        image = image_value
+                        if max_image_size:
+                            image = resize_image_max_size([image], max_image_size)[0]
+                        hf_content.append({"type": "image", image_key: image})
+                    elif isinstance(image_value, str) and image_value:
+                        loaded = load_images([image_value])
+                        image = loaded[0] if loaded else image_value
+                        if max_image_size and isinstance(image, Image.Image):
+                            image = resize_image_max_size([image], max_image_size)[0]
+                        hf_content.append({"type": "image", image_key: image})
+
+        if hf_content:
+            hf_messages.append({"role": role, "content": hf_content})
+    return hf_messages
+
+
+def messages_to_text_with_image_tokens(messages: List[Dict]) -> tuple:
+    """Flatten canonical messages to text with <image> tokens and image list.
+
+    This is a compatibility bridge for model wrappers whose tokenizer expects a
+    model-specific single prompt rather than native multimodal chat messages.
+    """
+    parts, images = [], []
+    role_labels = {
+        "system": "[System]: ",
+        "user": "[User]: ",
+        "assistant": "[Assistant]: ",
+    }
+
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        prefix = role_labels.get(role, f"[{role.title()}]: ")
+        turn_parts = []
+
+        if isinstance(content, str):
+            if content.strip():
+                turn_parts.append(content.strip())
+        elif isinstance(content, list):
+            for item in content:
+                item_type = item.get("type")
+                if item_type in ("text", "input_text", "output_text"):
+                    text = item.get("text", "").strip()
+                    if text:
+                        turn_parts.append(text)
+                elif item_type in ("image", "image_url", "input_image"):
+                    image_value = _get_image_value(item)
+                    if image_value:
+                        turn_parts.append("<image>")
+                        images.append(image_value)
+
+        if turn_parts:
+            parts.append(prefix + " ".join(turn_parts))
+
+    return "\n".join(parts), images
 
 
 def summarize_messages(messages: List[Dict], max_chars: int = 1000) -> str:

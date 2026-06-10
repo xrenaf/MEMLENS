@@ -16,7 +16,7 @@ from transformers import (
 from qwen_vl_utils import process_vision_info
 from PIL import Image
 
-from .model_utils import LLM, format_chat
+from .model_utils import LLM, format_chat, messages_to_hf_chat
 
 import logging
 logger = logging.getLogger(__name__)
@@ -236,28 +236,31 @@ class Qwen2VLModel(LLM):
         """
         from PIL import Image
 
-        # Build text from template
-        text = data["user_template"].format(
-            context=test_item.get("context", ""),
-            question=test_item.get("question", ""),
-            question_date=test_item.get("question_date", "unknown"),
-        )
+        if test_item.get("messages"):
+            messages = messages_to_hf_chat(test_item["messages"])
+        else:
+            # Build text from template
+            text = data["user_template"].format(
+                context=test_item.get("context", ""),
+                question=test_item.get("question", ""),
+                question_date=test_item.get("question_date", "unknown"),
+            )
 
-        # Load images from paths
-        image_paths = test_item.get("image_list", [])
-        image_inputs = []
-        for path in image_paths:
-            if path.startswith(("http://", "https://")):
-                image_inputs.append(path)
-            else:
-                try:
-                    img = Image.open(path).convert("RGB")
-                    image_inputs.append(img)
-                except Exception as e:
-                    logger.warning(f"Failed to load image {path}: {e}")
+            # Load images from paths
+            image_paths = test_item.get("image_list", [])
+            image_inputs = []
+            for path in image_paths:
+                if path.startswith(("http://", "https://")):
+                    image_inputs.append(path)
+                else:
+                    try:
+                        img = Image.open(path).convert("RGB")
+                        image_inputs.append(img)
+                    except Exception as e:
+                        logger.warning(f"Failed to load image {path}: {e}")
 
-        # Format as chat messages using format_chat
-        messages = format_chat(text, image_inputs, data.get("system_template", ""))
+            # Format as chat messages using format_chat
+            messages = format_chat(text, image_inputs, data.get("system_template", ""))
 
         # Apply chat template
         text = self.processor.apply_chat_template(

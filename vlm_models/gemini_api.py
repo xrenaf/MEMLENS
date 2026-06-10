@@ -26,7 +26,7 @@ except ImportError:
 
 from .model_utils import (
     LLM, format_chat, load_images, resize_image_max_size,
-    summarize_messages, call_api,
+    count_message_images, call_api,
 )
 
 import logging
@@ -53,10 +53,15 @@ def format_contents_gemini(messages: List[Dict]) -> List:
             contents.append(content)
         elif isinstance(content, list):
             for item in content:
-                if item.get("type") == "text":
+                item_type = item.get("type")
+                if item_type in ("text", "input_text"):
                     contents.append(item.get("text", ""))
-                elif item.get("type") == "image":
-                    img = item.get("image")
+                elif item_type in ("image", "image_url", "input_image"):
+                    if item_type == "image_url":
+                        image_url = item.get("image_url")
+                        img = image_url.get("url") if isinstance(image_url, dict) else image_url
+                    else:
+                        img = item.get("image") or item.get("image_url")
                     if isinstance(img, Image.Image):
                         buf = io.BytesIO()
                         img.save(buf, format="PNG")
@@ -66,7 +71,7 @@ def format_contents_gemini(messages: List[Dict]) -> List:
                                 mime_type="image/png",
                             )
                         )
-                    elif isinstance(img, str):
+                    elif isinstance(img, str) and img.startswith(("http://", "https://")):
                         # URL string — download and inline as bytes (with retry)
                         import urllib.request
                         import time as _time
@@ -88,6 +93,19 @@ def format_contents_gemini(messages: List[Dict]) -> List:
                                     _time.sleep(retry_pause)
                                 else:
                                     logger.error(f"[FAILED] All {max_retries} attempts failed for {img[:80]}: {e}")
+                    elif isinstance(img, str):
+                        try:
+                            pil_img = Image.open(img).convert("RGB")
+                            buf = io.BytesIO()
+                            pil_img.save(buf, format="PNG")
+                            contents.append(
+                                types.Part.from_bytes(
+                                    data=buf.getvalue(),
+                                    mime_type="image/png",
+                                )
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to load image {img}: {e}")
     return contents
 
 
@@ -123,6 +141,7 @@ class GeminiModel(LLM):
         self.api_base_url = kwargs.get("api_base_url") or os.environ.get("GEMINI_BASE_URL")
         self.api_model_name = kwargs.get("api_model_name") or model_name
         self.max_image_size = kwargs.get("max_image_size", 800)
+        self.enable_thinking = kwargs.get("enable_thinking", False)
 
         client_kwargs = {"api_key": self.api_key}
         if self.api_base_url:
@@ -139,10 +158,18 @@ class GeminiModel(LLM):
 
         logger.info(
             f"[Gemini] model={self.api_model_name}, "
-            f"base_url={self.api_base_url or 'default'}"
+            f"base_url={self.api_base_url or 'default'}, "
+            f"enable_thinking={self.enable_thinking}"
         )
 
     def prepare_inputs(self, test_item: Dict[str, Any], data: Dict[str, Any]) -> Any:
+        if test_item.get("messages"):
+            contents = format_contents_gemini(test_item["messages"])
+            return {
+                "contents": contents,
+                "image_count": count_message_images(test_item["messages"]),
+            }
+
         text = data["user_template"].format(
             context=test_item.get("context", ""),
             question=test_item.get("question", ""),
@@ -175,6 +202,11 @@ class GeminiModel(LLM):
             top_p=top_p,
             max_output_tokens=max_tokens,
         )
+        if not self.enable_thinking:
+            config.thinking_config = types.ThinkingConfig(
+                include_thoughts=False,
+                thinking_budget=0,
+            )
 
         response = call_api(
             lambda: self.client.models.generate_content(

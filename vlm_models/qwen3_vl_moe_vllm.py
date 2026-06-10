@@ -35,7 +35,10 @@ except ImportError:
         "Install it with: pip install openai>=1.0.0"
     )
 
-from .model_utils import LLM, format_chat, load_images, format_chat_openai, summarize_messages
+from .model_utils import (
+    LLM, format_chat, load_images, format_chat_openai, summarize_messages,
+    messages_to_openai_chat, count_message_images,
+)
 
 import logging
 logger = logging.getLogger(__name__)
@@ -82,6 +85,12 @@ class Qwen3VLMoeVLLMModel(LLM):
 
     def prepare_inputs(self, test_item: Dict[str, Any], data: Dict[str, Any]) -> Any:
         """Prepare inputs from vl-longbench format."""
+        if test_item.get("messages"):
+            return {
+                "messages": messages_to_openai_chat(test_item["messages"]),
+                "image_count": count_message_images(test_item["messages"]),
+            }
+
         text = data["user_template"].format(
             context=test_item.get("context", ""),
             question=test_item.get("question", ""),

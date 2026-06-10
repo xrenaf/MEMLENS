@@ -14,7 +14,7 @@ from transformers import (
 from qwen_vl_utils import process_vision_info
 from PIL import Image
 
-from .model_utils import LLM, format_chat, resize_image_max_size, load_images
+from .model_utils import LLM, format_chat, resize_image_max_size, load_images, messages_to_hf_chat
 
 import logging
 logger = logging.getLogger(__name__)
@@ -225,26 +225,38 @@ class CosmosReasonModel(LLM):
         Returns:
             Processed inputs ready for model.generate()
         """
-        # Build prompt from user_template + context (same pattern as Qwen models)
-        text = data["user_template"].format(
-            context=test_item.get("context", ""),
-            question=test_item.get("question", ""),
-            question_date=test_item.get("question_date", "unknown"),
-        )
+        if test_item.get("messages"):
+            messages = messages_to_hf_chat(
+                test_item["messages"],
+                max_image_size=self.max_image_size,
+            )
+            num_images = sum(
+                1
+                for msg in messages
+                for item in msg.get("content", [])
+                if item.get("type") == "image"
+            )
+        else:
+            # Build prompt from user_template + context (same pattern as Qwen models)
+            text = data["user_template"].format(
+                context=test_item.get("context", ""),
+                question=test_item.get("question", ""),
+                question_date=test_item.get("question_date", "unknown"),
+            )
 
-        # Load images from file paths
-        image_list = load_images(test_item.get("image_list", []))
+            # Load images from file paths
+            image_list = load_images(test_item.get("image_list", []))
 
-        num_images = len(image_list)
-        if num_images > 0:
-            logger.info(f"[CosmosReason:prepare_inputs] Processing {num_images} images")
+            num_images = len(image_list)
+            if num_images > 0:
+                logger.info(f"[CosmosReason:prepare_inputs] Processing {num_images} images")
 
-            # Resize images
-            if self.max_image_size:
-                image_list = resize_image_max_size(image_list, self.max_image_size)
+                # Resize images
+                if self.max_image_size:
+                    image_list = resize_image_max_size(image_list, self.max_image_size)
 
-        # Format as chat messages
-        messages = self.format_chat(text, image_list, system_prompt="")
+            # Format as chat messages
+            messages = self.format_chat(text, image_list, system_prompt="")
 
         # Apply chat template
         text = self.processor.apply_chat_template(

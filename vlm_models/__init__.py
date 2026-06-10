@@ -175,6 +175,8 @@ def load_LLM(args) -> Any:
             api_kwargs["api_model_name"] = args.api_model_name
         if getattr(args, "max_image_size", None):
             api_kwargs["max_image_size"] = args.max_image_size
+        if getattr(args, "enable_thinking", False):
+            api_kwargs["enable_thinking"] = True
 
         return GeminiModel(
             model_name,

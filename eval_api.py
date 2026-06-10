@@ -205,6 +205,9 @@ def run_test(args, model, input_file: str) -> str:
     if os.path.exists(output_path) and not args.overwrite:
         logger.info(f"{output_path} already exists, skipping...")
         return output_path
+    if args.overwrite and os.path.exists(cache_path):
+        os.remove(cache_path)
+        logger.info(f"Removed existing cache due to --overwrite: {cache_path}")
 
     # Load data
     data = load_data(

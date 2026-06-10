@@ -27,7 +27,10 @@ except ImportError:
         "Install it with: pip install openai>=1.0.0"
     )
 
-from .model_utils import LLM, format_chat, load_images, format_chat_openai, summarize_messages
+from .model_utils import (
+    LLM, format_chat, load_images, format_chat_openai, summarize_messages,
+    messages_to_openai_chat, count_message_images,
+)
 
 import logging
 logger = logging.getLogger(__name__)
@@ -80,6 +83,12 @@ class GLM46VVLLMModel(LLM):
         logger.info(f"[GLM46VVLLM] Connected to {self.vllm_base_url}, model={self.api_model_name}, thinking={self.enable_thinking}")
 
     def prepare_inputs(self, test_item: Dict[str, Any], data: Dict[str, Any]) -> Any:
+        if test_item.get("messages"):
+            return {
+                "messages": messages_to_openai_chat(test_item["messages"]),
+                "image_count": count_message_images(test_item["messages"]),
+            }
+
         text = data["user_template"].format(
             context=test_item.get("context", ""),
             question=test_item.get("question", ""),
