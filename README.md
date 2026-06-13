@@ -37,6 +37,7 @@ This repository contains the **evaluation code** for running VLMs against the ME
 
 - [Setup](#setup)
 - [Data](#data)
+- [Memory-Agent Details](#memory-agent-details)
 - [Running Evaluation](#running-evaluation)
 - [Scoring](#scoring)
 - [Supported Models](#supported-models)
@@ -87,6 +88,10 @@ Each `dataset_*.json` file contains the same 789 questions with different contex
 ### Agent subset (n = 195)
 
 Memory-augmented agent pipelines (M3-Agent, M2A, M3C, Memory-T1, Mem0, MemOS, MemAgent-7B) are evaluated on a fixed stratified 195-question subset of the full benchmark, not the full 789 questions, because per-question agent inference is roughly 60× slower than direct VLM inference. The exact `question_id` list lives in `agent_subset_195.json` (an *indexing* file with no QA payload), together with the per-type breakdown (61 IE / 35 MSR / 48 TR / 29 KU / 22 AR), stratification details (seed = 42, derived from a 200-sample then intersected with available agent runs to drop 5 incomplete questions), and a Python snippet for filtering each `dataset_*.json` to the subset. See paper Appendix G.2 for full derivation.
+
+## Memory-Agent Details
+
+We provide public reproduction notes for the memory-agent baselines in [`memory-agent/`](memory-agent/). The folder summarizes how MEMLENS sessions are converted for each agent, the key retrieval and embedding settings, and the lightweight prompt builders used for methods such as mem0, Memory-T1, M3C, and M3-Agent.
 
 ## Running Evaluation
 
