@@ -242,17 +242,15 @@ def evaluate(data: List[Dict[str, Any]],
         item = eval_data[idx]
         output_len = item.get('output_len', 0)
 
-        # order_ranking references are parenthesis-delimited sequences, e.g.
-        # "(5)(8)(1)...". The upstream `parsed_output` is normalize_answer()-ed,
-        # which strips parentheses to spaces and breaks the judge's exact-sequence
-        # match. For this task use the un-normalized `prediction` (parens preserved).
         task_key = get_task_key(item.get('question_type', ''),
                                 item.get('question_subtype', ''),
                                 item['reference_answer'])
-        if task_key == "TR_OrderRanking":
-            raw_pred = item.get('prediction') or item.get('parsed_output', '')
-        else:
-            raw_pred = item.get('parsed_output') or item.get('prediction', '')
+        # The judge must see the model's actual answer, not the SubEM/F1
+        # normalize_answer() output (parsed_output) — that lowercases, strips
+        # punctuation and removes articles, which destroys choice labels (A/B),
+        # date/money formatting, and ordering delimiters. normalize_for_judge
+        # does the judge-side parse + tail-truncation.
+        raw_pred = item.get('prediction') or item.get('parsed_output', '')
         prediction_info = normalize_for_judge(raw_pred)
 
         # Check if parsed output is excessively long (degenerate/unstripped reasoning)
