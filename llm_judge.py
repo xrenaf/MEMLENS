@@ -1,23 +1,21 @@
 #!/usr/bin/env python3
 """
-LLM-as-Judge evaluation — vLLM backend, concurrent, JSONL resume.
+LLM-as-Judge evaluation — vLLM or OpenAI-compatible API backend, concurrent,
+with JSONL resume.
 
 Scoring: 1=correct, 0=incorrect (int). Output: judge_metrics.json + judge_details.json
 
-Prompt style: grading teacher with rationale + score + JSON output.
-
-v3 — thinking model robustness:
-  - Degenerate/circular output detection (hedging markers + n-gram repetition)
-  - Tail truncation for long outputs (focus judge on final answer)
-  - Enhanced prompt with rules for circular reasoning + universal examples
-  - Per-sample diagnostics (is_degenerate, was_truncated, hedging_count)
+The judge grades each model answer against the reference answer using a
+grading-teacher prompt that produces a rationale, a score, and a JSON verdict.
+To stay robust on long or rambling outputs it detects degenerate/circular
+responses (hedging markers + n-gram repetition), tail-truncates very long
+outputs so the judge focuses on the final answer, and records per-sample
+diagnostics (is_degenerate, was_truncated, hedging_count).
 """
 
 import json
 import argparse
 import re
-import hashlib
-import sqlite3
 import time
 import threading
 from pathlib import Path
@@ -46,74 +44,50 @@ def init_vllm_judge(base_url: str = "http://localhost:8000/v1",
     _is_api_model = is_api
 
 
-# ── SQLite cache (cross-run dedup) ──
-_cache_lock = threading.Lock()
-
-def _get_cache_path() -> Path:
-    cache_dir = Path.home() / ".memlens_cache"
-    cache_dir.mkdir(exist_ok=True)
-    return cache_dir / "llm_judge.db"
-
-def _init_cache():
-    with _cache_lock:
-        conn = sqlite3.connect(_get_cache_path())
-        conn.execute('''CREATE TABLE IF NOT EXISTS judgments (
-            cache_key TEXT PRIMARY KEY, score INTEGER, timestamp REAL)''')
-        conn.commit()
-        conn.close()
-
-def _get_cached(cache_key: str) -> Optional[int]:
-    with _cache_lock:
-        conn = sqlite3.connect(_get_cache_path())
-        row = conn.execute('SELECT score FROM judgments WHERE cache_key=?', (cache_key,)).fetchone()
-        conn.close()
-    return row[0] if row else None
-
-def _set_cached(cache_key: str, score: int):
-    with _cache_lock:
-        conn = sqlite3.connect(_get_cache_path())
-        conn.execute('INSERT OR REPLACE INTO judgments (cache_key, score, timestamp) VALUES (?,?,?)',
-                     (cache_key, score, time.time()))
-        conn.commit()
-        conn.close()
-
-
 # ── Question metadata ──
 _QUESTIONS_METADATA = None
+
+def _candidate_question_files() -> List[Path]:
+    candidates = [
+        Path(__file__).parent.parent / "data" / "final_dataset_test" / "all_questions.json",
+        Path.home() / "MEMLENS" / "data" / "all_questions.json",
+    ]
+    data_dir = Path("/data/xrenaf/MEMLENS")
+    if data_dir.exists():
+        candidates.extend(sorted(data_dir.glob("dataset_*.json")))
+    return candidates
 
 def _load_questions_metadata(questions_file: Optional[str] = None) -> Dict[str, Dict]:
     global _QUESTIONS_METADATA
     if _QUESTIONS_METADATA is not None:
         return _QUESTIONS_METADATA
-    if questions_file is None:
-        candidates = [
-            Path(__file__).parent.parent / "data" / "final_dataset_test" / "all_questions.json",
-            Path.home() / "MEMLENS" / "data" / "all_questions.json",
-        ]
-        for p in candidates:
-            if p.exists():
-                questions_file = str(p)
-                break
-    if questions_file is None or not Path(questions_file).exists():
-        print("[Judge] WARNING: all_questions.json not found")
+    paths = [Path(questions_file)] if questions_file else [p for p in _candidate_question_files() if p.exists()]
+    if not paths:
+        print("[Judge] WARNING: question metadata not found")
         _QUESTIONS_METADATA = {}
         return _QUESTIONS_METADATA
-    with open(questions_file) as f:
-        all_qs = json.load(f)
     _QUESTIONS_METADATA = {}
-    for q in all_qs:
-        qid = q["question_id"]
-        _QUESTIONS_METADATA[qid] = {
-            "question_subtype": q.get("question_subtype", ""),
-            "old_answer": q.get("question_content", {}).get("old_answer", ""),
-        }
-        if qid.startswith("0x"):
-            _QUESTIONS_METADATA[qid[2:]] = _QUESTIONS_METADATA[qid]
-    print(f"[Judge] Loaded metadata for {len(all_qs)} questions")
+    for path in paths:
+        if not path.exists():
+            print(f"[Judge] WARNING: question metadata not found: {path}")
+            continue
+        with open(path) as f:
+            loaded = json.load(f)
+        all_qs = loaded.get("data", loaded) if isinstance(loaded, dict) else loaded
+        for q in all_qs:
+            qid = q["question_id"]
+            _QUESTIONS_METADATA[qid] = {
+                "question_subtype": q.get("question_subtype", ""),
+                "old_answer": q.get("old_answer") or q.get("question_content", {}).get("old_answer", ""),
+            }
+            if qid.startswith("0x"):
+                _QUESTIONS_METADATA[qid[2:]] = _QUESTIONS_METADATA[qid]
+    print(f"[Judge] Loaded metadata for {len(_QUESTIONS_METADATA)} question ids from {len(paths)} file(s)")
     return _QUESTIONS_METADATA
 
 def enrich_item(item: Dict[str, Any]) -> Dict[str, Any]:
-    if item.get("question_subtype") and item.get("old_answer") is not None:
+    needs_old_answer = item.get("question_type") == "knowledge_update" and not item.get("old_answer")
+    if item.get("question_subtype") and not needs_old_answer:
         return item
     metadata = _load_questions_metadata()
     qid = item.get("question_id", "")
@@ -162,7 +136,7 @@ def _parse_judge_response(text: str) -> int:
 
 def _judge_one(question: str, reference: str, prediction_info: Dict[str, Any],
                question_type: str, question_subtype: str = "",
-               old_answer: str = "", use_cache: bool = True) -> Tuple[int, Dict]:
+               old_answer: str = "") -> Tuple[int, Dict]:
     """Score one prediction. Returns (score, diagnostics)."""
     prediction = prediction_info["text"]
     diagnostics = {
@@ -174,15 +148,6 @@ def _judge_one(question: str, reference: str, prediction_info: Dict[str, Any],
 
     task_key = get_task_key(question_type, question_subtype, reference)
     prompt = build_judge_prompt(task_key, question, reference, prediction, old_answer)
-
-    cache_key = hashlib.md5(
-        f"v7:{task_key}:{question}:{reference}:{prediction}:{_vllm_model_name}".encode()
-    ).hexdigest()
-
-    if use_cache:
-        cached = _get_cached(cache_key)
-        if cached is not None:
-            return cached, diagnostics
 
     for attempt in range(3):
         try:
@@ -205,8 +170,6 @@ def _judge_one(question: str, reference: str, prediction_info: Dict[str, Any],
             raw = (resp.choices[0].message.content or "").strip()
             score = _parse_judge_response(raw)
 
-            if use_cache:
-                _set_cached(cache_key, score)
             return score, diagnostics
 
         except Exception as e:
@@ -221,7 +184,6 @@ def _judge_one(question: str, reference: str, prediction_info: Dict[str, Any],
 # ── Concurrent evaluation ──
 def evaluate(data: List[Dict[str, Any]],
              jsonl_path: str,
-             use_cache: bool = True,
              max_samples: Optional[int] = None,
              num_workers: int = 8) -> Tuple[Dict, List[Dict]]:
     """
@@ -242,7 +204,19 @@ def evaluate(data: List[Dict[str, Any]],
         with open(jsonl_path) as f:
             for line in f:
                 rec = json.loads(line)
-                completed[rec["idx"]] = rec
+                idx = rec["idx"]
+                if idx >= total:
+                    continue
+                item = eval_data[idx]
+                if rec.get("question_id") != item.get("question_id"):
+                    continue
+                expected_task_key = get_task_key(
+                    item.get('question_type', ''),
+                    item.get('question_subtype', ''),
+                    item['reference_answer'],
+                )
+                if rec.get("task_key") == expected_task_key:
+                    completed[idx] = rec
         print(f"[Judge] Resuming: {len(completed)}/{total} already done")
 
     remaining = [i for i in range(total) if i not in completed]
@@ -268,7 +242,17 @@ def evaluate(data: List[Dict[str, Any]],
         item = eval_data[idx]
         output_len = item.get('output_len', 0)
 
-        raw_pred = item.get('parsed_output') or item.get('prediction', '')
+        # order_ranking references are parenthesis-delimited sequences, e.g.
+        # "(5)(8)(1)...". The upstream `parsed_output` is normalize_answer()-ed,
+        # which strips parentheses to spaces and breaks the judge's exact-sequence
+        # match. For this task use the un-normalized `prediction` (parens preserved).
+        task_key = get_task_key(item.get('question_type', ''),
+                                item.get('question_subtype', ''),
+                                item['reference_answer'])
+        if task_key == "TR_OrderRanking":
+            raw_pred = item.get('prediction') or item.get('parsed_output', '')
+        else:
+            raw_pred = item.get('parsed_output') or item.get('prediction', '')
         prediction_info = normalize_for_judge(raw_pred)
 
         # Check if parsed output is excessively long (degenerate/unstripped reasoning)
@@ -292,16 +276,13 @@ def evaluate(data: List[Dict[str, Any]],
                 question_type=item.get('question_type', 'unknown'),
                 question_subtype=item.get('question_subtype', ''),
                 old_answer=item.get('old_answer', ''),
-                use_cache=use_cache,
             )
         rec = {
             "idx": idx,
             "question_id": item.get('question_id'),
             "question_type": item.get('question_type', ''),
             "question_subtype": item.get('question_subtype', ''),
-            "task_key": get_task_key(item.get('question_type', ''),
-                                      item.get('question_subtype', ''),
-                                      item['reference_answer']),
+            "task_key": task_key,
             "judge_score": score,
             "original_len": diagnostics.get("original_len", 0),
             "was_truncated": diagnostics.get("was_truncated", False),
@@ -335,6 +316,8 @@ def evaluate(data: List[Dict[str, Any]],
     # Build ordered details list + metrics with diagnostics
     details = []
     by_type = defaultdict(list)
+    by_subtype = defaultdict(list)
+    by_task_key = defaultdict(list)
     degenerate_counts = defaultdict(lambda: {"total": 0, "degenerate": 0, "truncated": 0, "auto_zero": 0})
 
     for idx in range(total):
@@ -354,9 +337,13 @@ def evaluate(data: List[Dict[str, Any]],
             "parsed_words": rec.get("parsed_words", 0),
             "output_len": rec.get("output_len", 0),
         })
-        by_type[rec["question_type"]].append(rec["judge_score"])
-
         qtype = rec["question_type"]
+        subtype = rec.get("question_subtype", "") or "unknown"
+        task_key = rec["task_key"]
+        by_type[qtype].append(rec["judge_score"])
+        by_subtype[f"{qtype}/{subtype}"].append(rec["judge_score"])
+        by_task_key[task_key].append(rec["judge_score"])
+
         degenerate_counts[qtype]["total"] += 1
         if rec.get("is_degenerate"):
             degenerate_counts[qtype]["degenerate"] += 1
@@ -372,6 +359,19 @@ def evaluate(data: List[Dict[str, Any]],
     total_degenerate = sum(dc["degenerate"] for dc in degenerate_counts.values())
     total_truncated = sum(dc["truncated"] for dc in degenerate_counts.values())
     total_auto_zero = sum(dc["auto_zero"] for dc in degenerate_counts.values())
+
+    def summarize_groups(groups: Dict[str, List[int]]) -> Dict[str, Dict[str, Any]]:
+        metrics = {}
+        for name, scores in sorted(groups.items()):
+            group_yes = sum(scores)
+            group_total = len(scores)
+            metrics[name] = {
+                "accuracy": group_yes / group_total if group_total else 0,
+                "yes": group_yes,
+                "no": group_total - group_yes,
+                "count": group_total,
+            }
+        return metrics
 
     by_type_metrics = {}
     for qtype, scores in sorted(by_type.items()):
@@ -399,6 +399,8 @@ def evaluate(data: List[Dict[str, Any]],
             "auto_zero_pct": round(total_auto_zero / total * 100, 1) if total else 0,
         },
         "by_question_type": by_type_metrics,
+        "by_question_subtype": summarize_groups(by_subtype),
+        "by_task_key": summarize_groups(by_task_key),
     }
     return metrics, details
 
@@ -416,24 +418,22 @@ def print_metrics(metrics: Dict):
     for qtype, s in sorted(metrics["by_question_type"].items()):
         print(f"  {qtype:<25} {s['accuracy']*100:>6.1f}% {s['yes']:>5} {s['no']:>5} "
               f"{s['count']:>5} {s.get('degenerate_count', 0):>5}")
+    if "by_task_key" in metrics:
+        print(f"  {'-'*60}")
+        print(f"  {'Task key':<25} {'Acc':>7} {'Yes':>5} {'No':>5} {'N':>5}")
+        print(f"  {'-'*60}")
+        for task_key, s in sorted(metrics["by_task_key"].items()):
+            print(f"  {task_key:<25} {s['accuracy']*100:>6.1f}% {s['yes']:>5} {s['no']:>5} "
+                  f"{s['count']:>5}")
     print(f"{'='*70}\n")
-
-
-# ── Backward-compat stubs for metric.py imports ──
-
-def llm_judge_score(*args, **kwargs):
-    """Stub — use evaluate() or _judge_one() directly."""
-    raise NotImplementedError("Use evaluate() for batch scoring or _judge_one() for single items.")
-
-def compute_llm_judge_metrics(*args, **kwargs):
-    """Stub — use evaluate() directly."""
-    raise NotImplementedError("Use evaluate() for batch LLM judge scoring.")
 
 
 def main():
     parser = argparse.ArgumentParser(description="LLM-as-Judge (vLLM or API)")
     parser.add_argument('--input_file', required=True)
-    parser.add_argument('--output_file', required=True, help='Metrics JSON output')
+    parser.add_argument('--output_file', default=None, help='Metrics JSON output')
+    parser.add_argument('--output_dir', default=None,
+                       help='Directory for judge_metrics.json and judge_details.json')
     parser.add_argument('--save_details', default=None, help='Details JSON output')
     # vLLM backend (default)
     parser.add_argument('--vllm_base_url', default='http://localhost:8000/v1')
@@ -446,11 +446,20 @@ def main():
     parser.add_argument('--api_base_url', default=None,
                        help='API base URL (falls back to OPENAI_BASE_URL env var)')
     parser.add_argument('--num_workers', type=int, default=8)
-    parser.add_argument('--no_cache', action='store_true')
     parser.add_argument('--max_samples', type=int, default=None)
     parser.add_argument('--questions_file', default=None)
     parser.add_argument('--verbose', action='store_true')
     args = parser.parse_args()
+
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if not args.output_file:
+            args.output_file = str(output_dir / "judge_metrics.json")
+        if not args.save_details:
+            args.save_details = str(output_dir / "judge_details.json")
+    if not args.output_file:
+        parser.error("one of --output_file or --output_dir is required")
 
     if args.api_model:
         # API mode
@@ -464,8 +473,6 @@ def main():
         # vLLM mode (default)
         print(f"[Judge] vLLM mode: model={args.vllm_model_name}, base_url={args.vllm_base_url}")
         init_vllm_judge(base_url=args.vllm_base_url, model_name=args.vllm_model_name)
-    if not args.no_cache:
-        _init_cache()
     if args.questions_file:
         _load_questions_metadata(args.questions_file)
 
@@ -474,11 +481,10 @@ def main():
     data = results['data'] if isinstance(results, dict) and 'data' in results else results
     print(f"[Judge] {args.input_file}: {len(data)} samples, workers={args.num_workers}")
 
-    jsonl_path = args.output_file + ".cache.jsonl"
+    jsonl_path = args.output_file + ".jsonl"
     metrics, details = evaluate(
         data=data,
         jsonl_path=jsonl_path,
-        use_cache=not args.no_cache,
         max_samples=args.max_samples,
         num_workers=args.num_workers,
     )

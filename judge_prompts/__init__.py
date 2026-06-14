@@ -10,7 +10,7 @@ from .temporal_reasoning import CRITERIA as TR_CRITERIA, EXAMPLES as TR_EXAMPLES
 from .multi_session_reasoning import CRITERIA as MSR_CRITERIA, EXAMPLES as MSR_EXAMPLES
 from .answer_refusal import CRITERIA as AR_CRITERIA, EXAMPLES as AR_EXAMPLES
 
-# Merged registries (9 task keys total)
+# Merged registries (10 task keys total)
 TASK_CRITERIA = {**IE_CRITERIA, **KU_CRITERIA, **TR_CRITERIA, **MSR_CRITERIA, **AR_CRITERIA}
 TASK_EXAMPLES = {**IE_EXAMPLES, **KU_EXAMPLES, **TR_EXAMPLES, **MSR_EXAMPLES, **AR_EXAMPLES}
 
@@ -37,7 +37,11 @@ def get_task_key(question_type: str, question_subtype: str, reference: str) -> s
         return "KU_KnowledgeUpdate"
     elif question_type == "answer_refusal":
         return "AR_AnswerRefusal"
-    return "IE_InformationExtraction"
+    elif question_type == "information_extraction":
+        if question_subtype == "previnfo":
+            return "IE_PreviousInfo"
+        return "IE_Entity"
+    return "IE_Entity"
 
 
 def build_judge_prompt(task_type: str, question: str, reference: str,

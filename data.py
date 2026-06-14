@@ -347,6 +347,7 @@ def load_data(
             "answer": item.get("answer", ""),
             "question_id": item.get("question_id"),
             "question_type": item.get("question_type"),
+            "question_subtype": item.get("question_subtype"),
         })
 
     mode_str = " (NO CONTEXT - blind baseline)" if no_context else ""

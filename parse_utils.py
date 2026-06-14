@@ -86,7 +86,7 @@ def _remove_punc(text: str) -> str:
 def normalize_answer(s: str) -> str:
     """
     Normalize answer text: lower → remove punctuation → remove articles → whitespace fix.
-    Used by sub_em() and f1_score() in metric.py.
+    Used by sub_em() and f1_score().
     """
     if not s:
         return ""

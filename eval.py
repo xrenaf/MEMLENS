@@ -328,6 +328,7 @@ def run_test(args, model, input_file: str) -> str:
                 "question_id": test_item.get("question_id"),
                 "question": test_item.get("question"),
                 "question_type": test_item.get("question_type"),
+                "question_subtype": test_item.get("question_subtype"),
                 "reference_answer": test_item.get("answer"),
                 "raw_prediction": output["output"],
                 "prediction": prediction,

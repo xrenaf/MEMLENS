@@ -216,6 +216,7 @@ if [[ $EXIT_CODE -eq 0 ]]; then
         python "$PROJECT_ROOT/llm_judge.py" \
             --input_file "$PRED_FILE" \
             --output_dir "$OUTPUT_DIR" \
+            --questions_file "$INPUT_FILE" \
             --vllm_base_url "$JUDGE_BASE_URL" \
             --verbose
         echo "[$(date)] Judge scores saved to $OUTPUT_DIR/judge_metrics.json"
